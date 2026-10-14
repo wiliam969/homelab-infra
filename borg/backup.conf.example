@@ -1,0 +1,11 @@
+# /mnt/user/appdata/borg/backup.conf - host-local borg backup settings.
+# Copy this file to /mnt/user/appdata/borg/backup.conf and fill in YOUR values.
+# NEVER commit the real file (it is deliberately not in this repo).
+SB_USER="u123456"                          # Storage Box user (or sub-account u123456_sub1)
+SB_HOST="u123456.your-storagebox.de"
+IMMICH_DB_CONTAINER="immich_postgres"      # docker ps | grep -i postgres
+IMMICH_DB_USER="immich"                    # immich v2 default; v1: postgres
+IMMICH_LIBRARY="/mnt/user/data/private/photos/upload"   # VERIFY: host path of immich originals
+PAPERLESS_CONTAINER="paperless-ngx"        # docker ps
+PAPERLESS_EXPORT_HOST_DIR="/mnt/user/data/private/paperless/export"
+PAPERLESS_MEDIA_HOST="/mnt/user/data/private/paperless/media"
