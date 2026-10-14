@@ -1,0 +1,11 @@
+# .woodpecker.yml - Woodpecker CI pipeline (local backend: steps run in the agent)
+when:
+  - event: push
+    branch: main
+  - event: manual
+
+steps:
+  - name: deploy
+    commands:
+      - echo "deploying $CI_REPO"
+      - ./deploy.sh
