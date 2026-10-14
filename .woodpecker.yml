@@ -6,6 +6,7 @@ when:
 
 steps:
   - name: deploy
+    image: alpine   # required by Woodpecker's schema; IGNORED by the local backend (no pull)
     commands:
       - echo "deploying $CI_REPO"
       - ./deploy.sh
