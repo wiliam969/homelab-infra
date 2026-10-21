@@ -1,0 +1,42 @@
+#!/bin/bash
+# =============================================================================
+# github-runner-autostart.sh - User Script: "At First Array Start"
+# Starts the GitHub Actions self-hosted runner as the unprivileged user
+# 'runner' (the runner binary refuses to run as root / under sudo).
+# nohup+setsid: detach from the User Scripts process group so the plugin's
+# cleanup cannot kill the runner when this script exits.
+# Self-healing: recreates the 'runner' user if a reboot wiped it (Unraid keeps
+# /etc/passwd in RAM and rebuilds it from the flash at boot).
+# =============================================================================
+RUNNER_DIR="/mnt/user/appdata/github-runner"
+RUNNER_USER="runner"
+PIDFILE="$RUNNER_DIR/runner.pid"
+
+# The User Scripts plugin runs scripts via sudo: SUDO_USER leaks into the
+# environment and through su into the runner, whose sudo-check then fails
+# ("Must not run interactively with sudo"). Strip it before su.
+unset SUDO_USER SUDO_UID SUDO_GID SUDO_COMMAND
+
+# --- self-healing: Unraid rebuilds /etc/passwd from the flash at boot, so a
+# user created with `useradd` in a terminal is GONE after a reboot (su then
+# fails with "No passwd entry for user 'runner'"). Recreate + fix ownerships.
+if ! id "$RUNNER_USER" >/dev/null 2>&1; then
+  useradd -m -s /bin/bash "$RUNNER_USER"
+  echo "created missing user '$RUNNER_USER'"
+fi
+chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_DIR" /mnt/user/appdata/borg 2>/dev/null || true
+SOCK_GROUP="$(stat -c %G /var/run/docker.sock 2>/dev/null || echo root)"
+usermod -aG "$SOCK_GROUP" "$RUNNER_USER" 2>/dev/null || true
+
+if [ ! -x "$RUNNER_DIR/run.sh" ]; then
+  echo "ERROR: $RUNNER_DIR/run.sh not found - run the one-time runner setup first"
+  exit 1
+fi
+if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+  echo "github-runner already running (pid $(cat "$PIDFILE"))"
+  exit 0
+fi
+touch "$RUNNER_DIR/runner.log"
+nohup setsid su -s /bin/bash "$RUNNER_USER" -c "cd '$RUNNER_DIR' && exec ./run.sh" >> "$RUNNER_DIR/runner.log" 2>&1 < /dev/null &
+echo $! > "$PIDFILE"
+echo "github-runner started as '$RUNNER_USER' (pid $(cat "$PIDFILE"))"

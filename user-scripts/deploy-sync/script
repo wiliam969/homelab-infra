@@ -1,0 +1,23 @@
+#!/bin/bash
+# =============================================================================
+# deploy-sync.sh - User Script: every minute (*/1 * * * *)
+# Copies user scripts staged by deploy.sh (running as the GitHub runner user)
+# into the User Scripts plugin dir. Runs as root, so it can write to /boot.
+# (The runner user cannot write to /boot: the flash is vfat, mounted 700 root.)
+# =============================================================================
+STAGE="/mnt/user/appdata/deploy-staging/user-scripts"
+DST="/boot/config/plugins/user.scripts/scripts"
+
+[ -d "$STAGE" ] || exit 0
+
+for d in "$STAGE"/*/; do
+  [ -f "$d/script" ] || continue
+  name="$(basename "$d")"
+  # only copy when the staged file is newer than the deployed one
+  if [ "$d/script" -nt "$DST/$name/script" ]; then
+    mkdir -p "$DST/$name"
+    cp -f "$d/script" "$DST/$name/script"
+    chmod +x "$DST/$name/script"
+    echo "synced user script: $name"
+  fi
+done
