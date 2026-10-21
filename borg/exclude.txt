@@ -3,9 +3,9 @@
 
 # --- borg's own config (passphrase, keys, cache) - never back this up ---
 /appdata/borg
-# --- paperless data dir: live SQLite, torn if file-copied. Documents+metadata
-#     are covered by the daily document_exporter zip (/paperless-export),
-#     raw documents by the weekly /paperless-media archive ---
+# --- paperless data dir: live SQLite, torn if file-copied. The DB is covered
+#     by the daily snapshot (/paperless-export/db.sqlite3), raw documents
+#     by the weekly /paperless-media archive ---
 /appdata/paperless-ngx/data
 # --- immich (only relevant if these live under /mnt/user/appdata/immich):
 #     originals are in the WEEKLY /immich-library archive; thumbs and

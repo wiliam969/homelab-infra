@@ -2,9 +2,9 @@
 # =============================================================================
 # Unraid: borg (DOCKER) -> Hetzner Storage Box (SSH/borg protocol, port 23)
 #
-#   daily  : pg_dump immich + paperless document_exporter (host-side, online)
-#            + docker appdata configs + /boot/config (flash) + paperless exports
-#   weekly : immich original photos + paperless docs (Sunday) + borg check
+#   daily  : pg_dump immich + paperless SQLite snapshot (host-side, online)
+#            + docker appdata configs + /boot/config (flash) + paperless db snapshot
+#   weekly : immich original photos + paperless media (PDFs) (Sunday) + borg check
 #
 # borgbackup/borg is one-shot (runs a command, exits): User Scripts calls
 # `docker run --rm`. Schedule: Community Apps -> User Scripts, daily 03:00.
@@ -40,15 +40,17 @@ APPDATA="/mnt/user/appdata"
 DUMP_DIR="/mnt/user/system/borg/dumps"
 
 IMMICH_DB_CONTAINER="immich_postgres"      # verify: docker ps | grep -i postgres
-IMMICH_DB_USER="postgres"
+IMMICH_DB_USER="immich"                   # immich v2 default (v1: postgres)
 # immich ORIGINALS live here (HOST path). Find it:
 #   docker inspect -f '{{range .Mounts}}{{println .Source " -> " .Destination}}{{end}}' immich-server
 #   docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' immich-server | grep -i upload
 IMMICH_LIBRARY="/mnt/user/appdata/immich/upload"
 
-# paperless-ngx WITHOUT postgres = SQLite. Use the official document_exporter
-# (documents + metadata manifest as zip - the supported restore path).
+# paperless-ngx WITHOUT postgres = SQLite. Back up the DB as an online
+# snapshot (container's python sqlite3, no downtime) + the media dir weekly.
+# Restore: put db.sqlite3 + media back - no manifest/importer needed.
 PAPERLESS_CONTAINER="paperless-ngx"                                 # docker ps
+PAPERLESS_DB_CONTAINER_PATH="/usr/src/paperless/data/db.sqlite3"    # container-side SQLite file
 PAPERLESS_EXPORT_CONTAINER_PATH="/usr/src/paperless/export"         # container-side dir (your mapping!)
 PAPERLESS_EXPORT_HOST_DIR="/mnt/user/data/private/paperless/export" # matching host bind mount!
 PAPERLESS_MEDIA_HOST="/mnt/user/data/private/paperless/media"       # raw documents (weekly)
@@ -113,14 +115,14 @@ if docker ps --format '{{.Names}}' | grep -qx "$IMMICH_DB_CONTAINER"; then
   fi
 fi
 if docker ps --format '{{.Names}}' | grep -qx "$PAPERLESS_CONTAINER"; then
-  log "paperless document_exporter (SQLite mode)"
+  log "paperless: online SQLite snapshot -> db.sqlite3"
   mkdir -p "$PAPERLESS_EXPORT_HOST_DIR"
-  if ! docker exec "$PAPERLESS_CONTAINER" document_exporter "$PAPERLESS_EXPORT_CONTAINER_PATH"; then
-    log "WARNING: paperless export failed (missing files?) - continuing without it"
+  if ! docker exec "$PAPERLESS_CONTAINER" python -c "import sqlite3; s=sqlite3.connect('$PAPERLESS_DB_CONTAINER_PATH'); d=sqlite3.connect('$PAPERLESS_EXPORT_CONTAINER_PATH/db.sqlite3'); s.backup(d); d.close(); s.close()"; then
+    log "WARNING: paperless DB snapshot failed - continuing without it"
     FAILURES=$((FAILURES + 1))
   fi
 fi
-# keep only the newest local export zips (borg already holds them offsite)
+# clean up legacy document_exporter zips (borg already holds everything offsite)
 ls -t "$PAPERLESS_EXPORT_HOST_DIR"/export-*.zip 2>/dev/null | tail -n +$((KEEP_LOCAL_DUMPS + 1)) | xargs -r rm -f || true
 ls -t "$DUMP_DIR"/*.sql.zst 2>/dev/null | tail -n +$((KEEP_LOCAL_DUMPS + 1)) | xargs -r rm -f || true
 
@@ -145,7 +147,6 @@ if [ "$(date +%u)" -eq "$WEEKLY_DAY" ]; then
   MEDIA=()
   [ -d "$IMMICH_LIBRARY" ]             && MEDIA+=(/immich-library)
   [ -d "$PAPERLESS_MEDIA_HOST" ]       && MEDIA+=(/paperless-media)
-  [ -d "$APPDATA/paperless-ngx/data" ] && MEDIA+=(/appdata/paperless-ngx/data)
   if [ ${#MEDIA[@]} -gt 0 ]; then
     log "borg create: weekly media"
     borg create --stats --compression zstd,3 "::media-{now:%Y-%m-%d_%H-%M}" "${MEDIA[@]}"
