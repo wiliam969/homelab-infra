@@ -5,7 +5,7 @@
 # webhook). Safe to run repeatedly - everything is idempotent.
 #
 # Repo layout this expects (repo root = directory containing this script):
-#   user-scripts/<name>/script          -> installed into the User Scripts plugin
+#   user-scripts/<name>/script          -> staged; deploy-sync (root) installs it into the User Scripts plugin
 #   borg/exclude.txt                    -> /mnt/user/appdata/borg/exclude.txt
 #   compose/<stack>/docker-compose.yml  -> docker compose up -d (idempotent)
 #   work/                               -> your own scripts (not deployed, just stored)
@@ -13,20 +13,24 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
-USCRIPTS_DST="/boot/config/plugins/user.scripts/scripts"
+# User scripts are STAGED here: the runner user cannot write to /boot (the
+# flash is vfat, mounted 700 root, and its mount options cannot be changed).
+# The root-side User Script "deploy-sync" (every minute) copies staged
+# scripts into /boot/config/plugins/user.scripts/scripts/.
+STAGE_DIR="${DEPLOY_STAGE_DIR:-/mnt/user/appdata/deploy-staging}"
 COMPOSE_DIR="$REPO/compose"
 
 log(){ echo "[$(date '+%F %T')] $*"; }
 
-# 1) User Scripts: mirror user-scripts/<name>/script into the plugin directory
+# --- 1) User Scripts: stage user-scripts/<name>/script for the root sync
 if [ -d "$REPO/user-scripts" ]; then
   for d in "$REPO/user-scripts"/*/; do
     [ -f "$d/script" ] || continue
     name="$(basename "$d")"
-    mkdir -p "$USCRIPTS_DST/$name"
-    cp -f "$d/script" "$USCRIPTS_DST/$name/script"
-    chmod +x "$USCRIPTS_DST/$name/script"
-    log "user script deployed: $name"
+    mkdir -p "$STAGE_DIR/user-scripts/$name"
+    cp -f "$d/script" "$STAGE_DIR/user-scripts/$name/script"
+    chmod +x "$STAGE_DIR/user-scripts/$name/script"
+    log "user script staged: $name (deploy-sync installs it into User Scripts)"
   done
 fi
 
