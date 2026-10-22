@@ -131,6 +131,16 @@ if ! borg info >/dev/null 2>&1; then
   log "repo not found - initializing (borg init --encryption=repokey-blake2)"
   borg init --encryption=repokey-blake2
 fi
+# repokey mode stores the key inside the repo on the box - export a copy once,
+# so backups stay decryptable even if the box/repo is lost
+if [ ! -f "$RDIR/borg-key-backup.txt" ]; then
+  if docker run --rm "${ENV_ARGS[@]}" "${VOL_ARGS[@]}" -v "$RDIR:/borgstate" "$IMAGE" \
+       key export :: /borgstate/borg-key-backup.txt; then
+    log "borg key exported -> $RDIR/borg-key-backup.txt (copy it somewhere safe, off this host!)"
+  else
+    log "WARNING: borg key export failed - run 'borg key export' manually"
+  fi
+fi
 
 # ---------- 2) daily: appdata configs + dumps + flash config + exports -------
 DAILY_SRC=(/appdata /dumps /bootconfig)
