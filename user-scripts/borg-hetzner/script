@@ -65,7 +65,7 @@ if [ -f "$RDIR/backup.conf" ]; then . "$RDIR/backup.conf"; fi
 mkdir -p "$DUMP_DIR" "$RDIR/cache" "$RDIR/ssh"
 
 ENV_ARGS=(
-  -e "BORG_REPO=ssh://${SB_USER}@${SB_HOST}:23/./homelab-borg"
+  -e "BORG_REPO=ssh://${SB_USER}@${SB_HOST}:23/${SB_REPO_PATH}"
   -e "BORG_PASSPHRASE=$(cat "$PASSFILE")"
   -e "BORG_RSH=ssh -i /root/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
   -e BORG_RELOCATED_REPO_ACCESS_IS_OK=yes
