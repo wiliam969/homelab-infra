@@ -38,6 +38,7 @@ RDIR="/mnt/user/appdata/borg"              # host: passphrase, ssh/, exclude, ca
 PASSFILE="$RDIR/borg.passphrase"
 APPDATA="/mnt/user/appdata"
 DUMP_DIR="/mnt/user/system/borg/dumps"
+AB_SRC="/mnt/user/backup"
 
 IMMICH_DB_CONTAINER="immich_postgres"      # verify: docker ps | grep -i postgres
 IMMICH_DB_USER="immich"                   # immich v2 default (v1: postgres)
@@ -57,6 +58,14 @@ PAPERLESS_MEDIA_HOST="/mnt/user/data/private/paperless/media"       # raw docume
 KEEP_LOCAL_DUMPS=3
 WEEKLY_DAY=7                               # 1=Mon ... 7=Sun
 # -----------------------------------------------------------------------------
+
+LATEST_AB="$(ls -1d "$AB_SRC"/ab_* 2>/dev/null | sort | tail -n 1)"
+if [ -n "$LATEST_AB" ]; then
+  log "appdata snapshot: $LATEST_AB"
+  VOL_ARGS+=(-v "$LATEST_AB":/appdata-snap:ro")
+else
+  log "WARNING: no appdata snapshot found - falling back to live appdata"
+fi
 
 # host-local overrides (NOT in git): /mnt/user/appdata/borg/backup.conf
 # -> real values live there; deploys from git never clobber them
@@ -145,6 +154,7 @@ fi
 # ---------- 2) daily: appdata configs + dumps + flash config + exports -------
 DAILY_SRC=(/appdata /dumps /bootconfig)
 if [ -d "$PAPERLESS_EXPORT_HOST_DIR" ]; then DAILY_SRC+=(/paperless-export); fi
+if [ -n "$LATEST_AB" ]; then DAILY_SRC+=(/appdata-snap); fi
 log "borg create: daily (appdata configs, dumps, /boot/config, paperless exports)"
 borg create --stats --compression zstd,3 --exclude-from /etc/borg/exclude.txt \
   "::daily-{now:%Y-%m-%d_%H-%M}" "${DAILY_SRC[@]}"
