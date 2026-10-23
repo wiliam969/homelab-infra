@@ -61,7 +61,7 @@ WEEKLY_DAY=7                               # 1=Mon ... 7=Sun
 
 LATEST_AB="$(ls -1d "$AB_SRC"/ab_* 2>/dev/null | sort | tail -n 1)"
 if [ -n "$LATEST_AB" ]; then
-  log "appdata snapshot: $LATEST_AB"
+  log "appdata source: consistent snapshot ($LATEST_AB)"
   VOL_ARGS+=(-v "$LATEST_AB:/appdata-snap:ro")
 else
   log "WARNING: no appdata snapshot found - falling back to live appdata"
