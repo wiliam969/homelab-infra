@@ -2,54 +2,37 @@
 # =============================================================================
 # Unraid: borg (DOCKER) -> Hetzner Storage Box (SSH/borg protocol, port 23)
 #
-#   daily  : pg_dump immich + paperless SQLite snapshot (host-side, online)
-#            + docker appdata configs + /boot/config (flash) + paperless db snapshot
+#   daily  : appdata (via Appdata Backup plugin snapshot, fallback: live)
+#            + pg_dumpall immich + paperless SQLite snapshot + dumps
+#            + /boot/config (flash) + paperless exports
 #   weekly : immich original photos + paperless media (PDFs) (Sunday) + borg check
 #
-# borgbackup/borg is one-shot (runs a command, exits): User Scripts calls
-# `docker run --rm`. Schedule: Community Apps -> User Scripts, daily 03:00.
-#
-# Host prep (run once as root):
-#   mkdir -p /mnt/user/appdata/borg/ssh /mnt/user/appdata/borg/cache /mnt/user/system/borg/dumps
-#   chmod 700 /mnt/user/appdata/borg/ssh
-#   ssh-keygen -t ed25519 -f /mnt/user/appdata/borg/ssh/id_ed25519 -N "" -C unraid-borg
-#   chmod 600 /mnt/user/appdata/borg/ssh/id_ed25519
-#   openssl rand -base64 32 > /mnt/user/appdata/borg/borg.passphrase
-#   chmod 600 /mnt/user/appdata/borg/borg.passphrase
-#   -> upload id_ed25519.pub in Hetzner Console (Storage Box -> SSH keys)
-#   -> build the borg image (borgbackup/borg has NO ssh client - borg needs one):
-#      mkdir -p /mnt/user/appdata/borg/image
-#      printf 'FROM alpine:3.22\nRUN apk add --no-cache borgbackup openssh-client\nENTRYPOINT ["borg"]\n' \
-#        > /mnt/user/appdata/borg/image/Dockerfile
-#      docker build -t borg-ssh:latest /mnt/user/appdata/borg/image
-#   -> create /mnt/user/appdata/borg/backup.conf from the repo's
-#      borg/backup.conf.example and fill in YOUR values (NEVER commit it!)
-#
+# Schedule: User Scripts, daily. MUST run AFTER the Appdata Backup plugin
+# finishes (e.g. plugin 01:00, borg 03:00 - never overlapping!).
 # The repo is auto-initialized on the first run (borg init --encryption=repokey-blake2).
 # =============================================================================
 set -euo pipefail
 
+# --- functions FIRST, so nothing below can call them too early ---
+log(){ echo "[$(date '+%F %T')] $*"; }
+notify(){ [ -x /usr/local/emhttp/plugins/dynamix/scripts/notify ] && \
+  /usr/local/emhttp/plugins/dynamix/scripts/notify -e borg-backup -s "borg: $1" -d "$2" -i "$3" || true; }
+
 # ------------------------------- CONFIG --------------------------------------
 SB_USER="u123456"                          # Storage Box user (or sub-account u123456_sub1)
 SB_HOST="u123456.your-storagebox.de"
-IMAGE="borg-ssh:latest"                  # locally built (see header): borg + openssh-client
+IMAGE="borg-ssh:latest"                  # locally built: borg + openssh-client
 
 RDIR="/mnt/user/appdata/borg"              # host: passphrase, ssh/, exclude, cache
 PASSFILE="$RDIR/borg.passphrase"
 APPDATA="/mnt/user/appdata"
 DUMP_DIR="/mnt/user/system/borg/dumps"
-AB_SRC="/mnt/user/backup"
+AB_SRC="/mnt/user/backup"                  # Appdata Backup plugin destination
 
 IMMICH_DB_CONTAINER="immich_postgres"      # verify: docker ps | grep -i postgres
 IMMICH_DB_USER="immich"                   # immich v2 default (v1: postgres)
-# immich ORIGINALS live here (HOST path). Find it:
-#   docker inspect -f '{{range .Mounts}}{{println .Source " -> " .Destination}}{{end}}' immich-server
-#   docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' immich-server | grep -i upload
 IMMICH_LIBRARY="/mnt/user/appdata/immich/upload"
 
-# paperless-ngx WITHOUT postgres = SQLite. Back up the DB as an online
-# snapshot (container's python sqlite3, no downtime) + the media dir weekly.
-# Restore: put db.sqlite3 + media back - no manifest/importer needed.
 PAPERLESS_CONTAINER="paperless-ngx"                                 # docker ps
 PAPERLESS_DB_CONTAINER_PATH="/usr/src/paperless/data/db.sqlite3"    # container-side SQLite file
 PAPERLESS_EXPORT_CONTAINER_PATH="/usr/src/paperless/export"         # container-side dir (your mapping!)
@@ -59,16 +42,7 @@ KEEP_LOCAL_DUMPS=3
 WEEKLY_DAY=7                               # 1=Mon ... 7=Sun
 # -----------------------------------------------------------------------------
 
-LATEST_AB="$(ls -1d "$AB_SRC"/ab_* 2>/dev/null | sort | tail -n 1)"
-if [ -n "$LATEST_AB" ]; then
-  log "appdata source: consistent snapshot ($LATEST_AB)"
-  VOL_ARGS+=(-v "$LATEST_AB:/appdata-snap:ro")
-else
-  log "WARNING: no appdata snapshot found - falling back to live appdata"
-fi
-
 # host-local overrides (NOT in git): /mnt/user/appdata/borg/backup.conf
-# -> real values live there; deploys from git never clobber them
 if [ -f "$RDIR/backup.conf" ]; then . "$RDIR/backup.conf"; fi
 
 mkdir -p "$DUMP_DIR" "$RDIR/cache" "$RDIR/ssh"
@@ -88,24 +62,23 @@ VOL_ARGS=(
   -v "$DUMP_DIR:/dumps:ro"
   -v /boot/config:/bootconfig:ro
 )
-# mount media/export dirs explicitly (they may live OUTSIDE appdata) -
-# only mount paths that exist, so docker doesn't create stray dirs
 if [ -d "$IMMICH_LIBRARY" ];            then VOL_ARGS+=(-v "$IMMICH_LIBRARY:/immich-library:ro"); fi
 if [ -d "$PAPERLESS_EXPORT_HOST_DIR" ]; then VOL_ARGS+=(-v "$PAPERLESS_EXPORT_HOST_DIR:/paperless-export:ro"); fi
 if [ -d "$PAPERLESS_MEDIA_HOST" ];      then VOL_ARGS+=(-v "$PAPERLESS_MEDIA_HOST:/paperless-media:ro"); fi
-borg(){ docker run --rm "${ENV_ARGS[@]}" "${VOL_ARGS[@]}" "$IMAGE" "$@"; }
 
-log(){ echo "[$(date '+%F %T')] $*"; }
-notify(){ [ -x /usr/local/emhttp/plugins/dynamix/scripts/notify ] && \
-  /usr/local/emhttp/plugins/dynamix/scripts/notify -e borg-backup -s "borg: $1" -d "$2" -i "$3" || true; }
+# latest Appdata Backup snapshot (plugin must finish BEFORE this script runs)
+LATEST_AB="$(ls -1d "$AB_SRC"/ab_* 2>/dev/null | sort | tail -n 1)"
+if [ -n "$LATEST_AB" ]; then
+  VOL_ARGS+=(-v "$LATEST_AB:/appdata-snap:ro")
+fi
+
+borg(){ docker run --rm "${ENV_ARGS[@]}" "${VOL_ARGS[@]}" "$IMAGE" "$@"; }
 COMPLETED=0
 trap 'if [ "$COMPLETED" -eq 0 ]; then notify ERROR "backup failed - check User Scripts log" warning; fi; exit 1' ERR
 
-# ---------- 1) DB dumps / exports on the host (container has no docker access) -
+# ---------- 1) DB dumps on the host (container has no docker access) ---------
 TS=$(date +%F)
 FAILURES=0
-# dump to .part first: a failed pg_dumpall must not leave an empty file behind,
-# and same-day re-runs must not collide (zstd -o refuses to overwrite)
 dump_db(){  # $1=container  $2=db-user  $3=outfile
   local part="$3.part"
   rm -f "$part"
@@ -114,8 +87,6 @@ dump_db(){  # $1=container  $2=db-user  $3=outfile
   fi
   mv -f "$part" "$3"
 }
-# component failures are NON-FATAL: one broken app must not block the whole
-# backup. Count them, continue, exit non-zero at the end.
 if docker ps --format '{{.Names}}' | grep -qx "$IMMICH_DB_CONTAINER"; then
   log "dump immich DB"
   if ! dump_db "$IMMICH_DB_CONTAINER" "$IMMICH_DB_USER" "$DUMP_DIR/immich-$TS.sql.zst"; then
@@ -131,38 +102,42 @@ if docker ps --format '{{.Names}}' | grep -qx "$PAPERLESS_CONTAINER"; then
     FAILURES=$((FAILURES + 1))
   fi
 fi
-# clean up legacy document_exporter zips (borg already holds everything offsite)
 ls -t "$PAPERLESS_EXPORT_HOST_DIR"/export-*.zip 2>/dev/null | tail -n +$((KEEP_LOCAL_DUMPS + 1)) | xargs -r rm -f || true
 ls -t "$DUMP_DIR"/*.sql.zst 2>/dev/null | tail -n +$((KEEP_LOCAL_DUMPS + 1)) | xargs -r rm -f || true
 
-# ---------- 1b) repo check / auto-init (self-healing) -------------------------
+# ---------- 1b) repo check / auto-init + one-time key export ------------------
 if ! borg info >/dev/null 2>&1; then
   log "repo not found - initializing (borg init --encryption=repokey-blake2)"
   borg init --encryption=repokey-blake2
 fi
-# repokey mode stores the key inside the repo on the box - export a copy once,
-# so backups stay decryptable even if the box/repo is lost
 if [ ! -f "$RDIR/borg-key-backup.txt" ]; then
   if docker run --rm "${ENV_ARGS[@]}" "${VOL_ARGS[@]}" -v "$RDIR:/borgstate" "$IMAGE" \
        key export :: /borgstate/borg-key-backup.txt; then
-    log "borg key exported -> $RDIR/borg-key-backup.txt (copy it somewhere safe, off this host!)"
+    log "borg key exported -> $RDIR/borg-key-backup.txt (copy it somewhere safe, OFF this host!)"
   else
     log "WARNING: borg key export failed - run 'borg key export' manually"
   fi
 fi
 
-# ---------- 2) daily: appdata configs + dumps + flash config + exports -------
-DAILY_SRC=(/appdata /dumps /bootconfig)
+# ---------- 2) daily: snapshot (or live appdata) + dumps + flash + exports ----
+DAILY_SRC=(/dumps /bootconfig)
+if [ -n "$LATEST_AB" ]; then
+  log "appdata source: consistent snapshot ($LATEST_AB)"
+  DAILY_SRC+=(/appdata-snap)
+else
+  log "WARNING: no appdata snapshot found - falling back to LIVE /appdata"
+  DAILY_SRC+=(/appdata)
+fi
 if [ -d "$PAPERLESS_EXPORT_HOST_DIR" ]; then DAILY_SRC+=(/paperless-export); fi
-if [ -n "$LATEST_AB" ]; then DAILY_SRC+=(/appdata-snap); fi
-log "borg create: daily (appdata configs, dumps, /boot/config, paperless exports)"
+
+log "borg create: daily"
 borg create --stats --compression zstd,3 --exclude-from /etc/borg/exclude.txt \
   "::daily-{now:%Y-%m-%d_%H-%M}" "${DAILY_SRC[@]}"
 log "borg prune: daily"
 borg prune --list --stats --glob-archives 'daily-*' --keep-daily 7 --keep-weekly 5 --keep-monthly 6
-borg compact --stats >/dev/null 2>&1 || true    # borg >= 1.2, frees space after prune
+borg compact --stats >/dev/null 2>&1 || true
 
-# ---------- 3) weekly (Sunday): irreplaceable media + check ------------------
+# ---------- 3) weekly (Sunday): irreplaceable media + check -------------------
 if [ "$(date +%u)" -eq "$WEEKLY_DAY" ]; then
   MEDIA=()
   [ -d "$IMMICH_LIBRARY" ]             && MEDIA+=(/immich-library)
@@ -175,7 +150,6 @@ if [ "$(date +%u)" -eq "$WEEKLY_DAY" ]; then
   fi
   log "borg check"
   borg check --info --stats
-  # monthly deep check (slow, reads all data): borg check --verify-data
 fi
 
 log "done"
